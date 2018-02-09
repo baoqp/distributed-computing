@@ -7,13 +7,12 @@ import (
 	"sync"
 )
 
-
 type Clerk struct {
 	servers []*labrpc.ClientEnd
 	// You will have to modify this struct.
-	id int64
-	reqid int
-	mu      sync.Mutex
+	id    int64    // Client标识码
+	reqid int      // Client请求序号
+	mu    sync.Mutex
 }
 
 func nrand() int64 {
@@ -55,7 +54,7 @@ func (ck *Clerk) Get(key string) string {
 	ck.reqid++
 	ck.mu.Unlock()
 	for {
-		for _,v := range ck.servers {
+		for _, v := range ck.servers {
 			var reply GetReply
 			ok := v.Call("RaftKV.Get", &args, &reply)
 			if ok && reply.WrongLeader == false {
@@ -89,8 +88,9 @@ func (ck *Clerk) PutAppend(key string, value string, op string) {
 	args.ReqID = ck.reqid
 	ck.reqid++
 	ck.mu.Unlock()
+
 	for {
-		for _,v := range ck.servers {
+		for _, v := range ck.servers {
 			var reply PutAppendReply
 			ok := v.Call("RaftKV.PutAppend", &args, &reply)
 			if ok && reply.WrongLeader == false {

@@ -19,16 +19,15 @@ func DPrintf(format string, a ...interface{}) (n int, err error) {
 	return
 }
 
-
 type Op struct {
 	// Your definitions here.
 	// Field names must start with capital letters,
 	// otherwise RPC will break.
-	Kind string //"Put" or "Append" "Get"
-	Key string
+	Kind  string //"Put" or "Append" "Get"
+	Key   string
 	Value string
-	Id int64
-	ReqId int
+	Id    int64 // Client标识码
+	ReqId int   // Client请求序号
 }
 
 type RaftKV struct {
@@ -40,11 +39,10 @@ type RaftKV struct {
 	maxraftstate int // snapshot if log grows this big
 
 	// Your definitions here.
-	db			map[string]string
-	ack 		map[int64]int
-	result	map[int]chan Op
+	db     map[string]string
+	ack    map[int64]int // 保存已有的操作
+	result map[int]chan Op
 }
-
 
 func (kv *RaftKV) AppendEntryToLog(entry Op) bool {
 	index, _, isLeader := kv.rf.Start(entry)
@@ -53,26 +51,37 @@ func (kv *RaftKV) AppendEntryToLog(entry Op) bool {
 	}
 
 	kv.mu.Lock()
-	ch,ok := kv.result[index]
+	ch, ok := kv.result[index]
 	if !ok {
-		ch = make(chan Op,1)
+		ch = make(chan Op, 1)
 		kv.result[index] = ch
 	}
 	kv.mu.Unlock()
+
+
+	/*
+	* 调用kv.rf.Start(entry)的时候，如果是Leader,改方法返回true, 此时只把命令包装
+	* 到一个LogEntry中保存在Leader中，并没有在集群中的多数peer中都保存，之后raft会
+	* broadcastAppendEntries, 最终当raft发现该LogEntry已经commit, 会向kv service
+	* applyCh 写入ApplyMsg, 而kv service拿到ApplyMsg会根据其中的Index找到kv.result
+	* 对应的chan并写入数据。此时这里的case op := <-ch:才能返回。当然如果长时间未响应，
+	* 就返回false
+	*/
+
+	// TODO raft的broadcastAppendEntries是每个HBINTERVAL时间执行，并不是一个时间来了就执行。
 	select {
 	case op := <-ch:
 		return op == entry
 	case <-time.After(1000 * time.Millisecond):
-	//log.Printf("timeout\n")
+		//log.Printf("timeout\n")
 		return false
 	}
 }
 
-
-func (kv *RaftKV) CheckDup(id int64,reqid int) bool {
+func (kv *RaftKV) CheckDup(id int64, reqid int) bool {
 	//kv.mu.Lock()
 	//defer kv.mu.Unlock()
-	v,ok := kv.ack[id]
+	v, ok := kv.ack[id]
 	if ok {
 		return v >= reqid
 	}
@@ -81,7 +90,7 @@ func (kv *RaftKV) CheckDup(id int64,reqid int) bool {
 
 func (kv *RaftKV) Get(args *GetArgs, reply *GetReply) {
 	// Your code here.
-	entry := Op{Kind:"Get",Key:args.Key,Id:args.Id,ReqId:args.ReqID}
+	entry := Op{Kind: "Get", Key: args.Key, Id: args.Id, ReqId: args.ReqID}
 
 	ok := kv.AppendEntryToLog(entry)
 	if !ok {
@@ -100,7 +109,7 @@ func (kv *RaftKV) Get(args *GetArgs, reply *GetReply) {
 
 func (kv *RaftKV) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
 	// Your code here.
-	entry := Op{Kind:args.Op,Key:args.Key,Value:args.Value,Id:args.Id,ReqId:args.ReqID}
+	entry := Op{Kind: args.Op, Key: args.Key, Value: args.Value, Id: args.Id, ReqId: args.ReqID}
 	ok := kv.AppendEntryToLog(entry)
 	if !ok {
 		reply.WrongLeader = true
@@ -158,7 +167,6 @@ func StartKVServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persiste
 	kv.applyCh = make(chan raft.ApplyMsg)
 	kv.rf = raft.Make(servers, me, persister, kv.applyCh)
 
-
 	kv.db = make(map[string]string)
 	kv.ack = make(map[int64]int)
 	kv.result = make(map[int]chan Op)
@@ -176,7 +184,7 @@ func StartKVServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persiste
 				kv.mu.Lock()
 				d.Decode(&LastIncludedIndex)
 				d.Decode(&LastIncludedTerm)
-				kv.db = make(map[string]string)
+				kv.db = make(map[string]string) // snapshot 保存的是数据，不是LogEntry
 				kv.ack = make(map[int64]int)
 				d.Decode(&kv.db)
 				d.Decode(&kv.ack)
@@ -184,11 +192,11 @@ func StartKVServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persiste
 			} else {
 				op := msg.Command.(Op)
 				kv.mu.Lock()
-				if !kv.CheckDup(op.Id,op.ReqId) {
+				if !kv.CheckDup(op.Id, op.ReqId) {
 					kv.Apply(op)
 				}
 
-				ch,ok := kv.result[msg.Index]
+				ch, ok := kv.result[msg.Index]
 				if ok {
 					select {
 					case <-kv.result[msg.Index]:
@@ -206,7 +214,7 @@ func StartKVServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persiste
 					e.Encode(kv.db)
 					e.Encode(kv.ack)
 					data := w.Bytes()
-					go kv.rf.StartSnapshot(data,msg.Index)
+					go kv.rf.StartSnapshot(data, msg.Index)
 				}
 				kv.mu.Unlock()
 			}
